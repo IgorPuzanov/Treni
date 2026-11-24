@@ -5,12 +5,31 @@ const view = document.querySelector('#view');
 const modal = document.querySelector('#modal');
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const deviceMode = document.querySelector('meta[name="treni-device-storage"]') !== null;
+async function startDeviceStorage() {
+  if (!deviceMode) return;
+  if (!navigator.serviceWorker) throw new Error('Открой приложение в Safari или Chrome по защищённой ссылке HTTPS.');
+  await navigator.serviceWorker.register('./service-worker.js');
+  await navigator.serviceWorker.ready;
+  if (navigator.serviceWorker.controller) return;
+  await new Promise((resolve,reject)=>{
+    const timeout=setTimeout(()=>reject(new Error('Хранилище телефона не запустилось. Обнови страницу.')),12000);
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      clearTimeout(timeout);
+      resolve();
+    },{once:true});
+  });
+}
 const read = async (url, options) => {
-  const response = await fetch(url, options);
+  const response = await fetch(url.replace(/^\//,'./'), options);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Сервер недоступен');
   return data;
 };
+await startDeviceStorage().catch(error=>{
+  view.textContent = error.message;
+  throw error;
+});
 const [catalog, photos, initial] = await Promise.all(['/catalog.json','/photos.json','/api/state'].map(url => read(url))).catch(error => {
   view.textContent = 'Не удалось открыть Трени. Проверь запуск сервера и обнови страницу. ' + error.message;
   throw error;
@@ -402,7 +421,7 @@ function workout() {
     <section class="panel"><div class="ph"><h2>${sessionTitle(session)}</h2><span class="pill">${statusLabel(session)}</span></div>
     <div class="pb">${session.comment?`<p class="preline sub">${esc(session.comment)}</p>`:''}
     <p class="sub">Серым показаны назначенные значения. Отметь подход, чтобы записать результат.</p>
-    ${session.id==='demo-run'&&!locked?'<p class="smallnote">Для пробы загрузки подойдёт <a href="/demo.webm" download="treni-test.webm">синтетическое видео WebM</a>.</p>':''}
+    ${session.id==='demo-run'&&!locked?'<p class="smallnote">Для пробы загрузки подойдёт <a href="./demo.webm" download="treni-test.webm">синтетическое видео WebM</a>.</p>':''}
     ${session.exercises.map((exercise,i)=>workoutExercise(exercise,i,locked)).join('')}${footer}</div></section>
     ${locked?'':`<aside class="panel rest-panel"><div class="ph"><h2>Таймер отдыха</h2></div><div class="pb"><div class="timer"><strong id="timerDisplay">00:00</strong></div><div class="tools timer-actions">
       ${button('Пауза','timer-pause')}${button('+30 с','timer-add')}${button('Пропустить','timer-skip')}</div></div></aside>`}</div>`;

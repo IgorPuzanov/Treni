@@ -5,12 +5,15 @@ import {join} from 'node:path';
 import {browser} from './cdp.mjs';
 
 const app = process.env.TRENI_TEST_URL || 'http://127.0.0.1:4183';
+const deviceMode = process.env.TRENI_DEVICE_MODE === '1';
 const screenshots = process.env.TRENI_SCREENSHOTS;
 const b = await browser(Number(process.env.TRENI_CDP_PORT||9331));
 const {run,send} = b;
 const failures = [];
 const sleep = ms => new Promise(resolve=>setTimeout(resolve,ms));
-const state = async()=> (await fetch(app+'/api/state').then(r=>r.json())).state;
+const state = async()=> deviceMode
+  ? run("fetch('./api/state').then(r=>r.json()).then(body=>body.state)")
+  : (await fetch(app+'/api/state').then(r=>r.json())).state;
 const wait = async (predicate,label='DOM ready') => {
   for (let i=0;i<70;i++) {
     if (await predicate()) return;
@@ -256,7 +259,7 @@ try {
     await selectFile('[data-upload]',fileURLToPath(new URL('../public/demo.webm',import.meta.url)));
     await wait(async()=> (await state()).sessions.find(s=>s.id===session.id).exercises[0].media?.url,'uploaded video');
     uploadMedia=(await state()).sessions.find(s=>s.id===session.id).exercises[0].media;
-    assert.match(uploadMedia.url,/^\/media\/.+\.webm$/);
+    assert.match(uploadMedia.url,/^\.?\/media\/.+\.webm$/);
     await wait(()=>dom("!$('[data-action=finish]').disabled"));
     await click('[data-action=finish]');
     await wait(async()=> (await state()).sessions.find(s=>s.id===session.id).status==='submitted');
@@ -268,9 +271,10 @@ try {
     assert.equal(await dom("$('#reviewPlayer').getAttribute('src')"),uploadMedia.url);
     assert.ok(await has('Комментарий клиента Т13'));
     await playable('#reviewPlayer');
-    const res=await fetch(app+uploadMedia.url,{headers:{Range:'bytes=0-99'}});
-    assert.equal(res.status,206);
-    assert.equal((await res.arrayBuffer()).byteLength,100);
+    const range=deviceMode
+      ? await run(`fetch(${JSON.stringify(uploadMedia.url)},{headers:{Range:'bytes=0-99'}}).then(async r=>[r.status,(await r.arrayBuffer()).byteLength])`)
+      : await fetch(app+uploadMedia.url,{headers:{Range:'bytes=0-99'}}).then(async r=>[r.status,(await r.arrayBuffer()).byteLength]);
+    assert.deepEqual(range,[206,100]);
   });
   await test('T15','История демо, реальные старые видео и отсутствующие файлы',async()=>{
     await go('queue');
@@ -279,7 +283,7 @@ try {
     await click('#videoHistory summary');
     assert.equal(await dom("all('[data-action=history-item]').length"),5);
     await click('[data-action=history-item][data-index="2"]');
-    assert.equal(await dom("$('#reviewPlayer').getAttribute('src')"),'/demo-history.webm');
+    assert.equal(await dom("$('#reviewPlayer').getAttribute('src')"),deviceMode?'./demo-history.webm':'/demo-history.webm');
     await playable('#reviewPlayer');
     await click('[data-action=history-item][data-index="1"]');
     assert.ok(await has('Видео не загружено'));
@@ -364,7 +368,7 @@ try {
     await wait(async()=> (await state()).sessions.find(s=>s.id===session.id).exercises[0].feedback?.frames[0]?.url===frameUrl);
     await navigate('#client/feedback/'+session.id);
     assert.equal(await dom("$('.feedback-item img').getAttribute('src')"),frameUrl);
-    assert.equal(await fetch(app+frameUrl).then(response=>response.status),200);
+    assert.equal(deviceMode?await run(`fetch(${JSON.stringify(frameUrl)}).then(r=>r.status)`):await fetch(app+frameUrl).then(r=>r.status),200);
     await shot('05-client-feedback');
   });
   await test('T22','Раздельные базы, 1065 и 495, исходные заголовки и ID',async()=>{
@@ -411,7 +415,25 @@ try {
     await wait(()=>dom("!!$('#recordPreview video')"));
     await playable('#recordPreview video');
   });
+  if (deviceMode) {
+    await test('EX02','Устанавливаемый манифест и повторное открытие без сети',async()=>{
+      const {installabilityErrors}=await send('Page.getInstallabilityErrors');
+      assert.deepEqual(installabilityErrors,[]);
+      await send('Network.enable');
+      await send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:0,uploadThroughput:0});
+      try {
+        await navigate('#client/feedback/'+session.id);
+        await send('Page.reload');
+        await wait(()=>has('Проверка Т18'),'offline reload');
+        assert.ok(await has('Проверка Т18'));
+        assert.equal(await run(`fetch(${JSON.stringify(frameUrl)}).then(r=>r.status)`),200);
+      } finally {
+        await send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+      }
+    });
+  }
   assert.deepEqual(b.errors,[],'Unhandled browser errors');
-  console.log(`Summary: ${24-failures.length}/24 passed (23 acceptance checks + 1 recording check).`);
+  const total=deviceMode?25:24;
+  console.log(`Summary: ${total-failures.length}/${total} passed.`);
   if (failures.length) process.exitCode=1;
 } finally { b.close(); }
